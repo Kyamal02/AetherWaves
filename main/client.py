@@ -14,6 +14,8 @@ server_port = 9999
 connection_statuses = {}
 registration_confirmed = asyncio.Event()
 clients = {}
+# Глобальная переменная для хранения экземпляра приложения GUI
+app = None
 
 
 async def send_udp_packet(dst_ip, dst_port, data):
@@ -26,14 +28,6 @@ def send_scapy_packet(dst_ip, dst_port, data):
     """Отправляет UDP пакет с использованием scapy."""
     packet = IP(dst=dst_ip) / UDP(sport=src_port, dport=dst_port) / data
     send(packet)
-
-
-async def get_clients(interval):
-    """Периодический запрос списка клиентов."""
-    while True:
-        data = {"action": "GET", "client_id": client_id, "src_port": src_port}
-        await send_udp_packet(server_ip, server_port, data)
-        await asyncio.sleep(interval)
 
 
 async def listen_for_incoming_messages(host='0.0.0.0', port=src_port):
@@ -83,6 +77,13 @@ async def process_incoming_message(action, message, addr):
         print(f"Ошибка с сервера: {message.get('message')}")
 
 
+async def get_clients(interval):
+    """Периодический запрос списка клиентов."""
+    while True:
+        data = {"action": "GET", "client_id": client_id, "src_port": src_port}
+        await send_udp_packet(server_ip, server_port, data)
+        await asyncio.sleep(interval)
+
 def connection_status(ip, port):
     key = (ip, port)
     return connection_statuses.get(key, {"status": "не подтвержен", "last_active": 0})["status"]
@@ -113,6 +114,7 @@ async def check_connections_periodically(interval):
                 await send_udp_packet(ip, port, {"action": "HEARTBEAT", "message": "Heartbeat"})
         await asyncio.sleep(interval)
 
+
 async def register_with_server(retry_attempts=3, retry_interval=7):
     global registration_confirmed
     for attempt in range(retry_attempts):
@@ -130,25 +132,106 @@ async def register_with_server(retry_attempts=3, retry_interval=7):
     return False
 
 
+# async def main():
+#     # Запускаем прослушивание сообщений
+#     asyncio.create_task(listen_for_incoming_messages('0.0.0.0', src_port))
+#
+#     # Попытка регистрации на сервере
+#     registration_success = await register_with_server()
+#     if not registration_success:
+#         print("Не удалось зарегистрироваться на сервере. Прекращение работы.")
+#         return
+#
+#     # Запуск остальных задач после успешной регистрации
+#     tasks = [
+#         get_clients(20),
+#         check_connections_periodically(10),
+#     ]
+#     await asyncio.gather(*tasks)
+#
+#
+# if __name__ == "__main__":
+#     asyncio.run(main())
+
+########################## GUI ############################
+import tkinter as tk
+from tkinter import messagebox
+import threading
 
 
-async def main():
-    # Запускаем прослушивание сообщений
-    asyncio.create_task(listen_for_incoming_messages('0.0.0.0', src_port))
+class AsyncioGUI(tk.Tk):
+    def __init__(self, loop, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.loop = loop
+        self.title("AetherWaves")
+        self.geometry("400x400")
 
-    # Попытка регистрации на сервере
-    registration_success = await register_with_server()
-    if not registration_success:
-        print("Не удалось зарегистрироваться на сервере. Прекращение работы.")
-        return
+        self.connect_button = tk.Button(self, text="Connect", command=self.on_connect)
+        self.connect_button.pack(pady=20)
 
-    # Запуск остальных задач после успешной регистрации
-    tasks = [
-        get_clients(20),
-        check_connections_periodically(10),
-    ]
-    await asyncio.gather(*tasks)
+        self.quit_button = tk.Button(self, text="Quit", command=self.on_quit)
+        self.quit_button.pack(pady=20)
+
+        self.clients_listbox = tk.Listbox(self)
+        self.clients_listbox.pack(pady=20, fill=tk.BOTH, expand=True)
+
+    def update_clients_listbox(self):
+        # Эта функция должна быть вызвана из основного потока
+        self.clients_listbox.delete(0, tk.END)
+        for client in clients:
+            status = connection_statuses.get((client['ip'], client['port']), {}).get("status", "Unknown")
+            self.clients_listbox.insert(tk.END, f"{client['client_id']} - {status}")
+        # Запланировать следующее обновление
+        self.after(5000, self.update_clients_listbox)  # Обновлять каждые 5 секунд
+
+    def on_connect(self):
+        asyncio.run_coroutine_threadsafe(self.connect(), self.loop)
+        asyncio.run_coroutine_threadsafe(get_clients(10), self.loop)
+        asyncio.run_coroutine_threadsafe(check_connections_periodically(10), self.loop)
+        self.update_clients_listbox()
+
+    async def connect(self):
+        registration_success = await register_with_server()
+
+        if registration_success:
+            messagebox.showinfo("Connected", "Successfully connected to the server!")
+
+        else:
+            messagebox.showerror("Connection Failed", "Could not connect to the server.")
+
+    def on_quit(self):
+        self.loop.call_soon_threadsafe(self.loop.stop)
+        self.destroy()
+
+
+def start_asyncio_loop(loop):
+    loop.run_forever()
+
+
+def main():
+    global app
+    # Создание нового цикла событий
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    # Запуск асинхронного цикла в отдельном потоке
+    asyncio_thread = threading.Thread(target=start_asyncio_loop, args=(loop,), daemon=True)
+    asyncio_thread.start()
+
+    # Создание экземпляра GUI
+    app = AsyncioGUI(loop)
+
+    # Запуск прослушивания сообщений как асинхронной задачи
+    asyncio.run_coroutine_threadsafe(listen_for_incoming_messages('0.0.0.0', src_port), loop)
+
+    # Запуск GUI
+    app.mainloop()
+
+    # Завершение асинхронного цикла после закрытия GUI
+    loop.call_soon_threadsafe(loop.stop)
+    asyncio_thread.join()
+    loop.close()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
