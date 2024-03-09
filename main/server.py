@@ -35,7 +35,10 @@ def udp_server(host='0.0.0.0', port=9999):
             client_id = message.get("client_id")
 
             if message["action"] == "REGISTER":
-                clients[client_id] = {"ip": ip_src, "port": port_src, "last_active": time.time()}
+                clients[client_id] = {"ip": ip_src, "port": port_src,
+                                      "last_active": time.time(),
+                                      "client_id": client_id}
+
                 print(f"Зарегистрирован клиент {client_id} из {ip_src}:{port_src}")
                 # Отправляем подтверждение регистрации
                 s.sendto(json.dumps({"action": "REGISTERED"}).encode(), addr)
@@ -50,7 +53,9 @@ def udp_server(host='0.0.0.0', port=9999):
                     s.sendto(response_data.encode(), addr)
                     print(f"Отправил список клиентов на {client_id}")
                 else:
-                    s.sendto(json.dumps({"action": "ERROR", "message": "Клиент еще не зарегестрирован на сервере"}).encode(), addr)
+                    s.sendto(
+                        json.dumps({"action": "ERROR", "message": "Клиент еще не зарегестрирован на сервере"}).encode(),
+                        addr)
 
 
 if __name__ == "__main__":

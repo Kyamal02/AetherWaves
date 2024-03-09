@@ -13,6 +13,7 @@ server_ip = "213.234.20.2"
 server_port = 9999
 connection_statuses = {}
 registration_confirmed = asyncio.Event()
+clients = {}
 
 
 async def send_udp_packet(dst_ip, dst_port, data):
@@ -25,24 +26,6 @@ def send_scapy_packet(dst_ip, dst_port, data):
     """Отправляет UDP пакет с использованием scapy."""
     packet = IP(dst=dst_ip) / UDP(sport=src_port, dport=dst_port) / data
     send(packet)
-
-
-async def register_with_server(retry_attempts=3, retry_interval=7):
-    global registration_confirmed
-    for attempt in range(retry_attempts):
-        print(f"Попытка {attempt + 1} подключиться к серверу...")
-        data = {"action": "REGISTER", "client_id": client_id}
-        await send_udp_packet(server_ip, server_port, data)
-
-        try:
-            await asyncio.wait_for(registration_confirmed.wait(), timeout=retry_interval)
-            return True
-        except asyncio.TimeoutError:
-            print(f"Не удалось подключиться к серверу после попытки {attempt + 1}. Повторная попытка...")
-
-    print("Не удалось зарегистрироваться на сервере после нескольких попыток.")
-    return False
-
 
 
 async def get_clients(interval):
@@ -72,9 +55,11 @@ async def listen_for_incoming_messages(host='0.0.0.0', port=src_port):
 
 async def process_incoming_message(action, message, addr):
     """Обработка входящих сообщений от сервера или других клиентов."""
+    global clients
     if action == 'CLIENTS':
         print(f"Список клиентов: {message.get('clients', [])}")
-        for client in message.get('clients', []):
+        clients = message.get('clients', [])
+        for client in clients:
             status = connection_status(client['ip'], client['port'])
             if status != 'confirmed':
                 print(f"Попытка подключиться к {client['ip']}:{client['port']} - Статус: {status}")
@@ -128,10 +113,28 @@ async def check_connections_periodically(interval):
                 await send_udp_packet(ip, port, {"action": "HEARTBEAT", "message": "Heartbeat"})
         await asyncio.sleep(interval)
 
+async def register_with_server(retry_attempts=3, retry_interval=7):
+    global registration_confirmed
+    for attempt in range(retry_attempts):
+        print(f"Попытка {attempt + 1} подключиться к серверу...")
+        data = {"action": "REGISTER", "client_id": client_id}
+        await send_udp_packet(server_ip, server_port, data)
+
+        try:
+            await asyncio.wait_for(registration_confirmed.wait(), timeout=retry_interval)
+            return True
+        except asyncio.TimeoutError:
+            print(f"Не удалось подключиться к серверу после попытки {attempt + 1}. Повторная попытка...")
+
+    print("Не удалось зарегистрироваться на сервере после нескольких попыток.")
+    return False
+
+
+
 
 async def main():
     # Запускаем прослушивание сообщений
-    listen_task = asyncio.create_task(listen_for_incoming_messages('0.0.0.0', src_port))
+    asyncio.create_task(listen_for_incoming_messages('0.0.0.0', src_port))
 
     # Попытка регистрации на сервере
     registration_success = await register_with_server()
