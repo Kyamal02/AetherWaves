@@ -84,9 +84,10 @@ async def get_clients(interval):
         await send_udp_packet(server_ip, server_port, data)
         await asyncio.sleep(interval)
 
+
 def connection_status(ip, port):
     key = (ip, port)
-    return connection_statuses.get(key, {"status": "не подтвержен", "last_active": 0})["status"]
+    return connection_statuses.get(key, {"status": "не найден", "last_active": 0})["status"]
 
 
 async def update_connection_status(ip, port, status):
@@ -132,105 +133,160 @@ async def register_with_server(retry_attempts=3, retry_interval=7):
     return False
 
 
-# async def main():
-#     # Запускаем прослушивание сообщений
-#     asyncio.create_task(listen_for_incoming_messages('0.0.0.0', src_port))
-#
-#     # Попытка регистрации на сервере
-#     registration_success = await register_with_server()
-#     if not registration_success:
-#         print("Не удалось зарегистрироваться на сервере. Прекращение работы.")
-#         return
-#
-#     # Запуск остальных задач после успешной регистрации
-#     tasks = [
-#         get_clients(20),
-#         check_connections_periodically(10),
-#     ]
-#     await asyncio.gather(*tasks)
-#
-#
-# if __name__ == "__main__":
-#     asyncio.run(main())
-
-########################## GUI ############################
-import tkinter as tk
-from tkinter import messagebox
+import sys
+from PyQt5.QtWidgets import QMessageBox, QApplication, QMainWindow, QVBoxLayout, QWidget, QPushButton, QListWidget, \
+    QAction, QMenu, QFileDialog, QListWidgetItem
+from PyQt5.QtCore import QTimer, pyqtSignal, Qt
 import threading
 
 
-class AsyncioGUI(tk.Tk):
+########################## GUI ############################
+class AsyncioGUI(QMainWindow):
+    # Определение сигнала для запуска таймера
+    start_timer_signal = pyqtSignal(int)
+
     def __init__(self, loop, *args, **kwargs):
+
         super().__init__(*args, **kwargs)
         self.loop = loop
-        self.title("AetherWaves")
-        self.geometry("400x400")
+        self.setWindowTitle("AetherWaves")
+        self.setGeometry(100, 100, 400, 400)
+        self.connected = False  # Добавляем атрибут для отслеживания состояния подключения
 
-        self.connect_button = tk.Button(self, text="Connect", command=self.on_connect)
-        self.connect_button.pack(pady=20)
+        self.central_widget = QWidget()
+        self.layout = QVBoxLayout(self.central_widget)
 
-        self.quit_button = tk.Button(self, text="Quit", command=self.on_quit)
-        self.quit_button.pack(pady=20)
+        self.connect_button = QPushButton("Connect", self)
+        self.connect_button.clicked.connect(self.on_connect_or_disconnect)
+        self.layout.addWidget(self.connect_button)
 
-        self.clients_listbox = tk.Listbox(self)
-        self.clients_listbox.pack(pady=20, fill=tk.BOTH, expand=True)
+        self.clients_listbox = QListWidget(self)
+        self.layout.addWidget(self.clients_listbox)
 
-    def update_clients_listbox(self):
-        # Эта функция должна быть вызвана из основного потока
-        self.clients_listbox.delete(0, tk.END)
-        for client in clients:
-            status = connection_statuses.get((client['ip'], client['port']), {}).get("status", "Unknown")
-            self.clients_listbox.insert(tk.END, f"{client['client_id']} - {status}")
-        # Запланировать следующее обновление
-        self.after(5000, self.update_clients_listbox)  # Обновлять каждые 5 секунд
+        self.clients_listbox.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.clients_listbox.customContextMenuRequested.connect(self.show_context_menu)
 
-    def on_connect(self):
-        asyncio.run_coroutine_threadsafe(self.connect(), self.loop)
-        asyncio.run_coroutine_threadsafe(get_clients(10), self.loop)
-        asyncio.run_coroutine_threadsafe(check_connections_periodically(10), self.loop)
-        self.update_clients_listbox()
+        self.setCentralWidget(self.central_widget)
+
+        self.timer = QTimer(self)
+        # Подключение сигнала к слоту для установки таймера
+        self.start_timer_signal.connect(self.start_timer)
+
+    # Метод для установки таймера
+    def start_timer(self, interval):
+        self.timer.timeout.connect(self.update_clients_listbox)
+        self.timer.start(interval)
+
+    def on_connect_or_disconnect(self):
+        if not self.connected:
+            asyncio.run_coroutine_threadsafe(self.connect(), self.loop)
+        else:
+            asyncio.run_coroutine_threadsafe(self.disconnect(), self.loop)
 
     async def connect(self):
+        asyncio.run_coroutine_threadsafe(listen_for_incoming_messages('0.0.0.0', src_port), self.loop)
         registration_success = await register_with_server()
-
         if registration_success:
-            messagebox.showinfo("Connected", "Successfully connected to the server!")
-
+            self.start_timer_signal.emit(1000)
+            self.connected = True
+            self.connect_button.setStyleSheet("background-color: green;")
+            self.connect_button.setText("Disconnect")
+            self.show_message("Connected", "Successfully connected to the server!")
+            asyncio.run_coroutine_threadsafe(get_clients(10), self.loop)
+            asyncio.run_coroutine_threadsafe(check_connections_periodically(10), self.loop)
         else:
-            messagebox.showerror("Connection Failed", "Could not connect to the server.")
+            self.show_message("Connection Failed", "Could not connect to the server.")
 
-    def on_quit(self):
-        self.loop.call_soon_threadsafe(self.loop.stop)
-        self.destroy()
+    async def disconnect(self):
+        # Здесь код для отключения от сервера
+        self.timer.stop()
+        self.clients_listbox.clear()
+        self.connected = False
+        self.connect_button.setStyleSheet("")
+        self.connect_button.setText("Connect")
+        self.show_message("Disconnected", "You have been disconnected from the server.")
+        # вот тут нужно остановить данные методы
+        self.tasks = asyncio.all_tasks(self.loop)
+
+        for task in self.tasks:
+            task.cancel()
+
+        await asyncio.gather(*self.tasks, return_exceptions=True)
+
+        # Очищаем список задач после отмены
+        self.tasks.clear()
+        self.timer.stop()
+
+    # def update_clients_listbox(self):
+    #     # print("ОБНОВЛЕНИЕ КЛИЕНТОВ ВЫЗЫВАЕТСЯ")
+    #     self.clients_listbox.clear()
+    #     for client in clients:
+    #         # status = connection_statuses.get((client['ip'], client['port']), {}).get("status", "Unknown")
+    #         status = connection_statuses.get((client['ip'], client['port']), {})
+    #         self.clients_listbox.addItem(f"{client['client_id']} - {status}")
+
+    def update_clients_listbox(self):
+        self.clients_listbox.clear()
+        for client in clients:  # Предполагается, что 'clients' - это список словарей с данными клиентов
+            status = connection_statuses.get((client['ip'], client['port']), {}).get("status")
+            item_text = f"{client['client_id']} - {status}"  # Пример формирования текста элемента
+            user_id = client['client_id']  # Получаем user_id клиента из данных
+            item = QListWidgetItem(item_text)
+            item.setData(Qt.UserRole, user_id)
+            self.clients_listbox.addItem(item)
+
+    def show_message(self, title, message):
+        QMessageBox.information(self, title, message)
+
+    def show_context_menu(self, position):
+        # Получаем модельный индекс элемента под курсором мыши
+        index = self.clients_listbox.indexAt(position)
+        if index.isValid():
+            item = self.clients_listbox.item(index.row())
+            user_id = item.data(Qt.UserRole)
+            context_menu = QMenu(self)
+            # Создаем действие "Отправить файл"
+            send_file_action = QAction("Отправить файл", self)
+            # Используем lambda для передачи user_id в слот
+            send_file_action.triggered.connect(lambda: self.on_send_file_triggered(user_id))
+            # Добавляем действие в контекстное меню
+            context_menu.addAction(send_file_action)
+            # Отображаем контекстное меню в текущей позиции курсора
+            context_menu.exec_(self.clients_listbox.viewport().mapToGlobal(position))
+
+        # Показываем контекстное меню
+        context_menu.exec_(self.clients_listbox.viewport().mapToGlobal(position))
+        print(f"Клиент которому пытаюсь отправить файл {user_id}")
+
+    def on_send_file_triggered(self, user_id):
+        # Открываем файловый менеджер для выбора файла
+        filename, _ = QFileDialog.getOpenFileName(self, "Выберите файл", "", "Все файлы (*)")
+
+        if filename:
+            # Здесь код для отправки файла
+            print(f"Выбран файл '{filename}' для отправки клиенту '{user_id}'")
+            # Вместо print используйте вашу логику для отправки файла
 
 
 def start_asyncio_loop(loop):
+    asyncio.set_event_loop(loop)
     loop.run_forever()
 
 
 def main():
     global app
-    # Создание нового цикла событий
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
-    # Запуск асинхронного цикла в отдельном потоке
     asyncio_thread = threading.Thread(target=start_asyncio_loop, args=(loop,), daemon=True)
     asyncio_thread.start()
 
-    # Создание экземпляра GUI
-    app = AsyncioGUI(loop)
+    app = QApplication(sys.argv)
+    gui = AsyncioGUI(loop)
 
-    # Запуск прослушивания сообщений как асинхронной задачи
-    asyncio.run_coroutine_threadsafe(listen_for_incoming_messages('0.0.0.0', src_port), loop)
+    gui.show()
 
-    # Запуск GUI
-    app.mainloop()
-
-    # Завершение асинхронного цикла после закрытия GUI
-    loop.call_soon_threadsafe(loop.stop)
-    asyncio_thread.join()
-    loop.close()
+    sys.exit(app.exec_())
 
 
 if __name__ == "__main__":
