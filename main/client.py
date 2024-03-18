@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import random
 import socket
 import time
@@ -8,42 +9,65 @@ from scapy.all import send
 from scapy.layers.inet import IP, UDP
 
 client_id = f"Клиент{random.randint(1000, 9999)}"
-src_port = random.randint(1024, 65535)
+# udp_port = random.randint(1024, 65535)
+# tcp_port = random.randint(1024, 65535)
+
 server_ip = "213.234.20.2"
 server_port = 9999
 connection_statuses = {}
 registration_confirmed = asyncio.Event()
+
+
 clients = {}
+
+base_save_path = "/путь/к/каталогу/для/сохранения/"
+
 # Глобальная переменная для хранения экземпляра приложения GUI
 app = None
+
+udp_port = None
+tcp_port = None
+
+
+
+def find_free_port():
+    # Создаем сокет
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(('localhost', 0))  # Привязываем сокет к любому доступному порту на локальной машине
+    port = s.getsockname()[1]  # Получаем номер порта, к которому был привязан сокет
+    s.close()  # Закрываем сокет
+    return port
 
 
 async def send_udp_packet(dst_ip, dst_port, data):
     """Асинхронная отправка UDP пакета с использованием scapy."""
     loop = asyncio.get_running_loop()
-    await loop.run_in_executor(None, send_scapy_packet, dst_ip, dst_port, json.dumps(data))
+    await loop.run_in_executor(None, send_scapy_udp_packet, dst_ip, dst_port, json.dumps(data))
 
 
-def send_scapy_packet(dst_ip, dst_port, data):
+def send_scapy_udp_packet(dst_ip, dst_port, data):
     """Отправляет UDP пакет с использованием scapy."""
-    packet = IP(dst=dst_ip) / UDP(sport=src_port, dport=dst_port) / data
+    packet = IP(dst=dst_ip) / UDP(sport=udp_port, dport=dst_port) / data
     send(packet)
 
 
-async def listen_for_incoming_messages(host='0.0.0.0', port=src_port):
+async def listen_for_incoming_udp_messages(host='0.0.0.0'):
     """Асинхронное прослушивание входящих UDP сообщений."""
+    port = find_free_port()
+    global udp_port
+    udp_port = port
     loop = asyncio.get_running_loop()
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
         sock.bind((host, port))
         sock.setblocking(False)
         while True:
-            data, addr = await loop.sock_recvfrom(sock, 1024)
+            data, addr = await loop.sock_recvfrom(sock, 4096)
             message = json.loads(data.decode())
             action = message.get('action')
 
             # Обработка сообщений
             print(f"Получено от {addr}: {action}")
-            if action in ['CLIENTS', 'MESSAGE', 'CONFIRMATION', 'HEARTBEAT', 'ERROR', 'REGISTERED']:
+            if action in ['CLIENTS', 'MESSAGE', 'CONFIRMATION', 'HEARTBEAT', 'ERROR', 'REGISTERED', 'TCP_INFO']:
                 await process_incoming_message(action, message, addr)
 
 
@@ -77,10 +101,21 @@ async def process_incoming_message(action, message, addr):
         print(f"Ошибка с сервера: {message.get('message')}")
 
 
+
+async def send_file(filename, user_id):
+    global tcp_connection_confirmed
+    ip, port = None
+    file_extension = os.path.splitext(filename)[1]  # Получаем расширение файла
+    for client in clients:
+        if client['client_id'] == user_id:
+            ip, port = client['ip'], client['port']
+            break
+
+
 async def get_clients(interval):
     """Периодический запрос списка клиентов."""
     while True:
-        data = {"action": "GET", "client_id": client_id, "src_port": src_port}
+        data = {"action": "GET", "client_id": client_id, "src_port": udp_port}
         await send_udp_packet(server_ip, server_port, data)
         await asyncio.sleep(interval)
 
@@ -120,7 +155,7 @@ async def register_with_server(retry_attempts=3, retry_interval=7):
     global registration_confirmed
     for attempt in range(retry_attempts):
         print(f"Попытка {attempt + 1} подключиться к серверу...")
-        data = {"action": "REGISTER", "client_id": client_id}
+        data = {"action": "REGISTER", "client_id": client_id, 'tcp_port': tcp_port}
         await send_udp_packet(server_ip, server_port, data)
 
         try:
@@ -131,6 +166,44 @@ async def register_with_server(retry_attempts=3, retry_interval=7):
 
     print("Не удалось зарегистрироваться на сервере после нескольких попыток.")
     return False
+
+
+async def listen_for_incoming_tcp_messages(host = '0.0.0.0'):
+    server = await asyncio.start_server(handle_tcp_connection, host, tcp_port)
+    addr = server.sockets[0].getsockname()
+    print(f"Serving on {addr}")
+
+    async with server:
+        await server.serve_forever()
+
+
+async def handle_tcp_connection(reader, writer):
+    # Читаем данные от клиента
+    data = await reader.read(4096)  # Выбираем достаточно большой размер буфера
+    message = data.decode()
+
+    # Предполагаем, что сообщение - это JSON
+    try:
+        message_dict = json.loads(message)
+        action = message_dict.get('action')
+        print(f"Received action {action} from {writer.get_extra_info('peername')}")
+
+        # Осуществляем различные действия в зависимости от типа запроса
+        if action == "some_action":
+            # Обработка some_action
+            pass
+
+        response = {"status": "success", "message": "Action processed"}
+        writer.write(json.dumps(response).encode())
+        await writer.drain()
+
+    except json.JSONDecodeError:
+        print("Failed to decode message as JSON")
+
+    # Закрываем соединение
+    writer.close()
+
+
 
 
 import sys
@@ -184,7 +257,8 @@ class AsyncioGUI(QMainWindow):
             asyncio.run_coroutine_threadsafe(self.disconnect(), self.loop)
 
     async def connect(self):
-        asyncio.run_coroutine_threadsafe(listen_for_incoming_messages('0.0.0.0', src_port), self.loop)
+        asyncio.run_coroutine_threadsafe(listen_for_incoming_tcp_messages('0.0.0.0'), self.loop)
+        asyncio.run_coroutine_threadsafe(listen_for_incoming_udp_messages('0.0.0.0'), self.loop)
         registration_success = await register_with_server()
         if registration_success:
             self.start_timer_signal.emit(1000)
@@ -216,14 +290,6 @@ class AsyncioGUI(QMainWindow):
         # Очищаем список задач после отмены
         self.tasks.clear()
         self.timer.stop()
-
-    # def update_clients_listbox(self):
-    #     # print("ОБНОВЛЕНИЕ КЛИЕНТОВ ВЫЗЫВАЕТСЯ")
-    #     self.clients_listbox.clear()
-    #     for client in clients:
-    #         # status = connection_statuses.get((client['ip'], client['port']), {}).get("status", "Unknown")
-    #         status = connection_statuses.get((client['ip'], client['port']), {})
-    #         self.clients_listbox.addItem(f"{client['client_id']} - {status}")
 
     def update_clients_listbox(self):
         self.clients_listbox.clear()
@@ -263,6 +329,7 @@ class AsyncioGUI(QMainWindow):
         filename, _ = QFileDialog.getOpenFileName(self, "Выберите файл", "", "Все файлы (*)")
 
         if filename:
+            asyncio.run_coroutine_threadsafe(send_file(filename, user_id), self.loop)
             # Здесь код для отправки файла
             print(f"Выбран файл '{filename}' для отправки клиенту '{user_id}'")
             # Вместо print используйте вашу логику для отправки файла

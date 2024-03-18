@@ -33,9 +33,10 @@ def udp_server(host='0.0.0.0', port=9999):
             message = json.loads(data.decode())
             ip_src, port_src = addr
             client_id = message.get("client_id")
+            tcp_port = message.get("tcp_port")
 
             if message["action"] == "REGISTER":
-                clients[client_id] = {"ip": ip_src, "port": port_src,
+                clients[client_id] = {"ip": ip_src, "port": port_src, "tcp_port":tcp_port,
                                       "last_active": time.time(),
                                       "client_id": client_id}
 
