@@ -1,15 +1,15 @@
 import asyncio
 import json
+import os
 import random
 import socket
 import time
+import uuid
 
 from scapy.all import send
 from scapy.layers.inet import IP, UDP
 
 client_id = f"Клиент{random.randint(1000, 9999)}"
-# udp_port = random.randint(1024, 65535)
-# tcp_port = random.randint(1024, 65535)
 
 server_ip = "213.234.20.2"
 server_port = 9999
@@ -17,6 +17,8 @@ connection_statuses = {}
 registration_confirmed = asyncio.Event()
 
 clients = {}
+
+filenames = {}
 
 base_save_path = "/путь/к/каталогу/для/сохранения/"
 
@@ -63,7 +65,8 @@ async def listen_for_incoming_udp_messages(host='0.0.0.0'):
 
             # Обработка сообщений
             print(f"Получено от {addr}: {action}")
-            if action in ['CLIENTS', 'MESSAGE', 'CONFIRMATION', 'HEARTBEAT', 'ERROR', 'REGISTERED', 'TCP_INFO']:
+            if action in ['CLIENTS', 'MESSAGE', 'CONFIRMATION', 'HEARTBEAT', 'ERROR', 'REGISTERED', 'FILE_PART',
+                          'REQUEST_MISSING_PARTS']:
                 await process_incoming_message(action, message, addr)
 
 
@@ -93,8 +96,93 @@ async def process_incoming_message(action, message, addr):
     elif action == 'REGISTERED':
         registration_confirmed.set()
         print("Регистрация на сервере выполнена успешно.")
+    elif action == 'FILE_PART':
+        file_id = message.get("file_id")  # Уникальный идентификатор файла
+        total_parts = message.get("total_parts")
+        sequence = message.get("sequence")
+        content = message.get("content")
+        transfer_key = (addr[0], file_id)
+        await process_incoming_file(transfer_key, total_parts,
+                                    sequence, content,
+                                    file_id, addr)
+    elif action == 'REQUEST_MISSING_PARTS':
+        file_id = message.get("file_id")
+        missing_parts = message.get("missing_parts")
+        total_parts = message.get("total_parts")
+        await resend_missing_parts(file_id, missing_parts, total_parts, addr)
     elif action == 'ERROR':
         print(f"Ошибка с сервера: {message.get('message')}")
+
+
+async def send_file(filename, user_id):
+    client = None
+    file_id = str(uuid.uuid4())
+    global filenames
+    filenames = {file_id: filename}
+    for c in clients:
+        if c['client_id'] == user_id:
+            client = c['client_id']
+    if client is None:
+        print("Клиент не найден")
+        return
+
+    file_size = os.path.getsize(filename)
+    total_parts = (file_size // 1024) + (1 if file_size % 1024 else 0)
+
+    with open(filename, 'rb') as file:
+        sequence_number = 1
+        while True:
+            bytes_read = file.read(1024)
+            if not bytes_read:
+                break
+            data = {
+                "action": "FILE_PART",
+                "file_id": file_id,  # Добавляем идентификатор файла в каждый пакет
+                "total_parts": total_parts,
+                "sequence": sequence_number,
+                "content": bytes_read.hex()
+            }
+            await send_udp_packet(client["ip"], client["port"], data)
+            sequence_number += 1
+
+
+async def resend_missing_parts(file_id, missing_parts, total_parts, addr):
+    # Получаем размер файла
+    file_path = filenames.get(file_id)
+    if not file_path:
+        print(f"Файл с ID {file_id} не найден.")
+        return
+
+    with open(file_path, 'rb') as file:
+        for sequence_number in missing_parts:
+            # Рассчитываем смещение для чтения нужной части файла
+            offset = (sequence_number - 1) * 1024
+            file.seek(offset)
+            bytes_read = file.read(1024)
+            if not bytes_read:
+                print(f"Не удалось прочитать часть {sequence_number} файла {file_id}.")
+                continue
+
+            data = {
+                "action": "FILE_PART",
+                "file_id": file_id,
+                "total_parts": total_parts,
+                "sequence": sequence_number,
+                "content": bytes_read.hex()
+            }
+            await send_udp_packet(addr[0], addr[1], data)
+
+
+async def process_incoming_file(transfer_key, total_parts, sequence, content, file_id, addr):
+    print()
+
+
+async def request_missing_parts(ip, port, total_parts, file_id):
+    print()
+
+
+async def assemble_file():
+    print()
 
 
 async def get_clients(interval):
@@ -151,14 +239,6 @@ async def register_with_server(retry_attempts=3, retry_interval=7):
 
     print("Не удалось зарегистрироваться на сервере после нескольких попыток.")
     return False
-
-
-def send_file(filename, user_id):
-    client = None
-    filename
-    for c in clients:
-        if c['client_id'] == user_id:
-            client = c['client_id']
 
 
 import sys
