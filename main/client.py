@@ -1,6 +1,5 @@
 import asyncio
 import json
-import os
 import random
 import socket
 import time
@@ -17,7 +16,6 @@ server_port = 9999
 connection_statuses = {}
 registration_confirmed = asyncio.Event()
 
-
 clients = {}
 
 base_save_path = "/путь/к/каталогу/для/сохранения/"
@@ -26,8 +24,6 @@ base_save_path = "/путь/к/каталогу/для/сохранения/"
 app = None
 
 udp_port = None
-tcp_port = None
-
 
 
 def find_free_port():
@@ -101,17 +97,6 @@ async def process_incoming_message(action, message, addr):
         print(f"Ошибка с сервера: {message.get('message')}")
 
 
-
-async def send_file(filename, user_id):
-    global tcp_connection_confirmed
-    ip, port = None
-    file_extension = os.path.splitext(filename)[1]  # Получаем расширение файла
-    for client in clients:
-        if client['client_id'] == user_id:
-            ip, port = client['ip'], client['port']
-            break
-
-
 async def get_clients(interval):
     """Периодический запрос списка клиентов."""
     while True:
@@ -155,7 +140,7 @@ async def register_with_server(retry_attempts=3, retry_interval=7):
     global registration_confirmed
     for attempt in range(retry_attempts):
         print(f"Попытка {attempt + 1} подключиться к серверу...")
-        data = {"action": "REGISTER", "client_id": client_id, 'tcp_port': tcp_port}
+        data = {"action": "REGISTER", "client_id": client_id}
         await send_udp_packet(server_ip, server_port, data)
 
         try:
@@ -168,42 +153,12 @@ async def register_with_server(retry_attempts=3, retry_interval=7):
     return False
 
 
-async def listen_for_incoming_tcp_messages(host = '0.0.0.0'):
-    server = await asyncio.start_server(handle_tcp_connection, host, tcp_port)
-    addr = server.sockets[0].getsockname()
-    print(f"Serving on {addr}")
-
-    async with server:
-        await server.serve_forever()
-
-
-async def handle_tcp_connection(reader, writer):
-    # Читаем данные от клиента
-    data = await reader.read(4096)  # Выбираем достаточно большой размер буфера
-    message = data.decode()
-
-    # Предполагаем, что сообщение - это JSON
-    try:
-        message_dict = json.loads(message)
-        action = message_dict.get('action')
-        print(f"Received action {action} from {writer.get_extra_info('peername')}")
-
-        # Осуществляем различные действия в зависимости от типа запроса
-        if action == "some_action":
-            # Обработка some_action
-            pass
-
-        response = {"status": "success", "message": "Action processed"}
-        writer.write(json.dumps(response).encode())
-        await writer.drain()
-
-    except json.JSONDecodeError:
-        print("Failed to decode message as JSON")
-
-    # Закрываем соединение
-    writer.close()
-
-
+def send_file(filename, user_id):
+    client = None
+    filename
+    for c in clients:
+        if c['client_id'] == user_id:
+            client = c['client_id']
 
 
 import sys
@@ -257,7 +212,6 @@ class AsyncioGUI(QMainWindow):
             asyncio.run_coroutine_threadsafe(self.disconnect(), self.loop)
 
     async def connect(self):
-        asyncio.run_coroutine_threadsafe(listen_for_incoming_tcp_messages('0.0.0.0'), self.loop)
         asyncio.run_coroutine_threadsafe(listen_for_incoming_udp_messages('0.0.0.0'), self.loop)
         registration_success = await register_with_server()
         if registration_success:
@@ -307,6 +261,8 @@ class AsyncioGUI(QMainWindow):
     def show_context_menu(self, position):
         # Получаем модельный индекс элемента под курсором мыши
         index = self.clients_listbox.indexAt(position)
+        user_id = None
+
         if index.isValid():
             item = self.clients_listbox.item(index.row())
             user_id = item.data(Qt.UserRole)
@@ -322,7 +278,8 @@ class AsyncioGUI(QMainWindow):
 
         # Показываем контекстное меню
         context_menu.exec_(self.clients_listbox.viewport().mapToGlobal(position))
-        print(f"Клиент которому пытаюсь отправить файл {user_id}")
+        if user_id:
+            print(f"Клиент которому пытаюсь отправить файл {user_id}")
 
     def on_send_file_triggered(self, user_id):
         # Открываем файловый менеджер для выбора файла
