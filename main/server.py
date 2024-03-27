@@ -30,6 +30,7 @@ def udp_server(host='0.0.0.0', port=9999):
         print(f"Server listening on UDP port {port}...")
         while True:
             data, addr = s.recvfrom(1024)
+            print(addr)
             message = json.loads(data.decode())
             ip_src, port_src = addr
             client_id = message.get("client_id")

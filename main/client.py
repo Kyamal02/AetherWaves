@@ -5,6 +5,7 @@ import random
 import socket
 import time
 import uuid
+import platform
 
 from scapy.all import send
 from scapy.layers.inet import IP, UDP
@@ -20,7 +21,33 @@ clients = {}
 
 filenames = {}
 
-base_save_path = "/путь/к/каталогу/для/сохранения/"
+file_transfers = {}
+
+
+from pathlib import Path
+
+# Определяем путь к домашней директории пользователя на разных ОС
+def get_user_home_dir():
+    # Проверяем операционную систему
+    if platform.system() == "Windows":
+        # Для Windows просто возвращаем домашнюю директорию текущего пользователя
+        user_home_dir = Path.home()
+    else:
+        # Для Linux и других Unix-подобных систем
+        sudo_user = os.getenv("SUDO_USER")
+        if sudo_user:
+            # Если скрипт запущен с sudo, определяем домашнюю директорию исходного пользователя
+            user_home_dir = Path(f"/home/{sudo_user}")
+        else:
+            # Для текущего пользователя (если не используется sudo)
+            user_home_dir = Path.home()
+
+    return user_home_dir
+
+# Использование функции для определения базового пути сохранения
+base_save_path = get_user_home_dir() / "Documents" / "AetherWaves"
+# Создаем директорию, если она не существует
+base_save_path.mkdir(parents=True, exist_ok=True)
 
 # Глобальная переменная для хранения экземпляра приложения GUI
 app = None
@@ -28,13 +55,23 @@ app = None
 udp_port = None
 
 
-def find_free_port():
-    # Создаем сокет
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.bind(('localhost', 0))  # Привязываем сокет к любому доступному порту на локальной машине
-    port = s.getsockname()[1]  # Получаем номер порта, к которому был привязан сокет
-    s.close()  # Закрываем сокет
-    return port
+def find_free_port(start=1024, end=65535):
+    for port in range(start, end + 1):
+        try:
+            # Создаем сокет
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            # Пытаемся привязать сокет к порту
+            s.bind(('localhost', port))
+            # Если удачно, получаем номер порта и закрываем сокет
+            port = s.getsockname()[1]
+            s.close()
+            return port
+        except OSError:
+            # Если порт занят, закрываем сокет и пробуем следующий порт
+            s.close()
+            continue
+    # Если свободный порт так и не найден, можно возвратить None или выбросить исключение
+    return None
 
 
 async def send_udp_packet(dst_ip, dst_port, data):
@@ -51,12 +88,9 @@ def send_scapy_udp_packet(dst_ip, dst_port, data):
 
 async def listen_for_incoming_udp_messages(host='0.0.0.0'):
     """Асинхронное прослушивание входящих UDP сообщений."""
-    port = find_free_port()
-    global udp_port
-    udp_port = port
     loop = asyncio.get_running_loop()
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-        sock.bind((host, port))
+        sock.bind((host, udp_port))
         sock.setblocking(False)
         while True:
             data, addr = await loop.sock_recvfrom(sock, 4096)
@@ -64,7 +98,7 @@ async def listen_for_incoming_udp_messages(host='0.0.0.0'):
             action = message.get('action')
 
             # Обработка сообщений
-            print(f"Получено от {addr}: {action}")
+            # print(f"Получено от {addr}: {action}")
             if action in ['CLIENTS', 'MESSAGE', 'CONFIRMATION', 'HEARTBEAT', 'ERROR', 'REGISTERED', 'FILE_PART',
                           'REQUEST_MISSING_PARTS']:
                 await process_incoming_message(action, message, addr)
@@ -79,30 +113,30 @@ async def process_incoming_message(action, message, addr):
         for client in clients:
             status = connection_status(client['ip'], client['port'])
             if status != 'confirmed':
-                print(f"Попытка подключиться к {client['ip']}:{client['port']} - Статус: {status}")
+                # print(f"Попытка подключиться к {client['ip']}:{client['port']} - Статус: {status}")
                 await send_udp_packet(client['ip'], client['port'],
                                       {"action": "MESSAGE", "message": f"Привет от {client_id}"})
-            else:
-                print(f"Уже подключен к {client['ip']}:{client['port']} - Статус: {status}")
+            # else:
+                # print(f"Уже подключен к {client['ip']}:{client['port']} - Статус: {status}")
     elif action == 'MESSAGE':
-        print(f"Сообщение от {addr}: {message.get('message')}")
+        # print(f"Сообщение от {addr}: {message.get('message')}")
         await send_udp_packet(addr[0], addr[1],
                               {"action": "CONFIRMATION", "message": f"Сообщение получено от {client_id}"})
     elif action == 'CONFIRMATION':
         await update_connection_status(addr[0], addr[1], 'confirmed')
-        print(f"Подтверждение от {addr}: {message.get('message')}")
+        # print(f"Подтверждение от {addr}: {message.get('message')}")
     elif action == 'HEARTBEAT':
         await update_connection_status(addr[0], addr[1], "confirmed")
     elif action == 'REGISTERED':
         registration_confirmed.set()
-        print("Регистрация на сервере выполнена успешно.")
+        # print("Регистрация на сервере выполнена успешно.")
     elif action == 'FILE_PART':
+        print("ЧАСТЬ ФАЙЛА ПОЛУЧЕНА")
         file_id = message.get("file_id")  # Уникальный идентификатор файла
         total_parts = message.get("total_parts")
         sequence = message.get("sequence")
         content = message.get("content")
-        transfer_key = (addr[0], file_id)
-        await process_incoming_file(transfer_key, total_parts,
+        await process_incoming_file(total_parts,
                                     sequence, content,
                                     file_id, addr)
     elif action == 'REQUEST_MISSING_PARTS':
@@ -110,8 +144,8 @@ async def process_incoming_message(action, message, addr):
         missing_parts = message.get("missing_parts")
         total_parts = message.get("total_parts")
         await resend_missing_parts(file_id, missing_parts, total_parts, addr)
-    elif action == 'ERROR':
-        print(f"Ошибка с сервера: {message.get('message')}")
+    # elif action == 'ERROR':
+        # print(f"Ошибка с сервера: {message.get('message')}")
 
 
 async def send_file(filename, user_id):
@@ -121,15 +155,17 @@ async def send_file(filename, user_id):
     filenames = {file_id: filename}
     for c in clients:
         if c['client_id'] == user_id:
-            client = c['client_id']
+            client = c
+
     if client is None:
         print("Клиент не найден")
         return
-
+    print(f"Файл отправляется {filename} клиенту {client['ip']}:{client['port']}")
     file_size = os.path.getsize(filename)
     total_parts = (file_size // 1024) + (1 if file_size % 1024 else 0)
 
     with open(filename, 'rb') as file:
+
         sequence_number = 1
         while True:
             bytes_read = file.read(1024)
@@ -173,16 +209,74 @@ async def resend_missing_parts(file_id, missing_parts, total_parts, addr):
             await send_udp_packet(addr[0], addr[1], data)
 
 
-async def process_incoming_file(transfer_key, total_parts, sequence, content, file_id, addr):
-    print()
+async def process_incoming_file(total_parts, sequence, content, file_id, addr):
+    global file_transfers
+
+    if file_id not in file_transfers:
+        file_transfers[file_id] = {
+            "total_parts": total_parts,
+            "received_parts": set(),
+            "file_parts": {}
+        }
+
+    # Декодируем содержимое файла из шестнадцатеричной строки в байты
+    content_bytes = bytes.fromhex(content)
+    # Сохраняем часть файла на диск
+    part_filename = f"{base_save_path}{file_id}_part_{sequence}.tmp"
+    print(f"Часть файла сохранилась в {part_filename}")
+    with open(part_filename, 'wb') as part_file:
+        part_file.write(content_bytes)
+
+    # Обновляем информацию о полученных частях
+    file_transfers[file_id]["received_parts"].add(sequence)
+    file_transfers[file_id]["file_parts"][sequence] = part_filename
+    print("тут вывод")
+    print(file_transfers)
+    # Проверка, получены ли все части файла
+    if len(file_transfers[file_id]["received_parts"]) == total_parts:
+        # Если все части получены, начинаем сборку файла
+        print("все части получены")
+        print(file_transfers)
+        await assemble_file(file_id)
+    else:
+        # Если не все части получены, планируем проверку недостающих частей
+        print("не все части были получены")
+        asyncio.create_task(check_and_request_missing_parts(file_id, addr))
 
 
-async def request_missing_parts(ip, port, total_parts, file_id):
-    print()
+async def check_and_request_missing_parts(file_id, addr, delay=5):
+    await asyncio.sleep(delay)  # Ждем, прежде чем проверять на недостающие части
+    missing_parts = []
+    total_parts = file_transfers[file_id]["total_parts"]
+    received_parts = file_transfers[file_id]["received_parts"]
+
+    for part in range(1, total_parts + 1):
+        if part not in received_parts:
+            missing_parts.append(part)
+
+    if missing_parts:
+        # Если найдены недостающие части, отправляем запрос на их повторную отправку
+        await send_udp_packet(addr[0], addr[1], {
+            "action": "REQUEST_MISSING_PARTS",
+            "file_id": file_id,
+            "missing_parts": missing_parts,
+            "total_parts": total_parts
+        })
 
 
-async def assemble_file():
-    print()
+async def assemble_file(file_id):
+    # Путь для окончательного файла
+    final_path = f"{base_save_path}{file_id}.file"
+    with open(final_path, 'wb') as final_file:
+        for part in sorted(file_transfers[file_id]["file_parts"].keys()):
+            part_filename = file_transfers[file_id]["file_parts"][part]
+            with open(part_filename, 'rb') as part_file:
+                final_file.write(part_file.read())
+            os.remove(part_filename)  # Удаляем временный файл части после сборки
+
+    print(f"Файл {file_id} успешно собран и сохранен как {final_path}.")
+    # Очищаем информацию о передаче файла
+    del file_transfers[file_id]
 
 
 async def get_clients(interval):
@@ -202,7 +296,7 @@ async def update_connection_status(ip, port, status):
     """Асинхронное обновление статуса соединения."""
     key = (ip, port)
     connection_statuses[key] = {"status": status, "last_active": time.time()}
-    print(f"Статус подключения обновлен для {ip}:{port} до {status}")
+    # print(f"Статус подключения обновлен для {ip}:{port} до {status}")
 
 
 async def check_connections_periodically(interval):
@@ -216,7 +310,7 @@ async def check_connections_periodically(interval):
                 continue
             # Если последняя активность была давно, обновляем статус на "lost"
             if value["status"] == "confirmed" and current_time - value["last_active"] > 10:
-                print(f"Соединение с {ip}:{port} считается потеряным")
+                # print(f"Соединение с {ip}:{port} считается потеряным")
                 connection_statuses[key]["status"] = "lost"  # Прямое обновление статуса
             # Отправляем heartbeat всем подтверждённым соединениям
             elif value["status"] == "confirmed":
@@ -227,7 +321,7 @@ async def check_connections_periodically(interval):
 async def register_with_server(retry_attempts=3, retry_interval=7):
     global registration_confirmed
     for attempt in range(retry_attempts):
-        print(f"Попытка {attempt + 1} подключиться к серверу...")
+        # print(f"Попытка {attempt + 1} подключиться к серверу...")
         data = {"action": "REGISTER", "client_id": client_id}
         await send_udp_packet(server_ip, server_port, data)
 
@@ -237,7 +331,7 @@ async def register_with_server(retry_attempts=3, retry_interval=7):
         except asyncio.TimeoutError:
             print(f"Не удалось подключиться к серверу после попытки {attempt + 1}. Повторная попытка...")
 
-    print("Не удалось зарегистрироваться на сервере после нескольких попыток.")
+    # print("Не удалось зарегистрироваться на сервере после нескольких попыток.")
     return False
 
 
@@ -367,9 +461,7 @@ class AsyncioGUI(QMainWindow):
 
         if filename:
             asyncio.run_coroutine_threadsafe(send_file(filename, user_id), self.loop)
-            # Здесь код для отправки файла
             print(f"Выбран файл '{filename}' для отправки клиенту '{user_id}'")
-            # Вместо print используйте вашу логику для отправки файла
 
 
 def start_asyncio_loop(loop):
@@ -378,6 +470,10 @@ def start_asyncio_loop(loop):
 
 
 def main():
+    port = find_free_port()
+    global udp_port
+    udp_port = port
+
     global app
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
